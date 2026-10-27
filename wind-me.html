@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Wind Me</title>
+<style>
+:root { --page: #17120f; --ink: #eadfc8; box-sizing: border-box; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); color-scheme: dark; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --page: #0d0a08; } }
+:root[data-theme="dark"] { --page: #0d0a08; }
+html { scroll-padding-top: env(safe-area-inset-top, 0px); }
+html, body { height: 100%; margin: 0; }
+body { background: var(--page); display: flex; justify-content: center; overflow: hidden; font-family: Georgia, "Times New Roman", serif; -webkit-user-select: none; user-select: none; }
+#wrap { position: relative; width: 100%; max-width: 480px; height: 100%; background: #000; }
+canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+#ui { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 28px; text-align: center; color: var(--ink); pointer-events: none; }
+#ui h1 { margin: 0; font-size: 2.6rem; }
+#ui p { margin: 0; max-width: 26ch; font-size: 1.05rem; line-height: 1.35; }
+#ui .small { font-size: 0.85rem; opacity: 0.7; }
+#ui.gone { display: none; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c"></canvas>
+  <div id="ui">
+    <h1 id="t">Wind Me</h1>
+    <p id="m">Hold your thumb down to wind the music box. Let go to stop.</p>
+    <p id="m2">Keep the dial in the green. Too slow and it opens. Too tight and the spring snaps. Survive until the song ends.</p>
+    <p class="small" id="m3">Loud sound. Touch to start.</p>
+  </div>
+</div>
+<script>
+(function () {
+  var wrap = document.getElementById('wrap'), cv = document.getElementById('c'), ctx = cv.getContext('2d');
+  var ui = document.getElementById('ui'), tEl = document.getElementById('t'), mEl = document.getElementById('m'), m2 = document.getElementById('m2'), m3 = document.getElementById('m3');
+  var W = 0, H = 0, dpr = 1, mode = 'title', holding = false, ac = null;
+  var GOAL = 25, s = 0.5, o = 0, t = 0, night = 1, bestNight = 0, scareT = 0, SCARE = 1.5, shake = 0, last = 0;
+  var noteT = 0, ni = 0, beat = 0, jolt = 4, crank = 0, why = '', creak1 = false, creak2 = false, flick = 0;
+  var NOTES = [440, 523, 659, 587, 523, 494, 440, 392, 440, 523, 494, 440, 415, 440];
+  try { bestNight = parseInt(localStorage.getItem('windme-night'), 10) || 0; } catch (e) {}
+
+  function resize() { dpr = window.devicePixelRatio || 1; W = wrap.clientWidth; H = wrap.clientHeight; cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); }
+  function sound() { try { if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)(); if (ac.state === 'suspended') ac.resume(); } catch (e) {} }
+  function tone(f, type, vol, dur, f2) {
+    if (!ac) return;
+    try {
+      var o1 = ac.createOscillator(), g = ac.createGain(), n = ac.currentTime;
+      o1.type = type; o1.frequency.setValueAtTime(f, n); if (f2) o1.frequency.exponentialRampToValueAtTime(f2, n + dur);
+      g.gain.setValueAtTime(vol, n); g.gain.exponentialRampToValueAtTime(0.001, n + dur);
+      o1.connect(g); g.connect(ac.destination); o1.start(); o1.stop(n + dur + 0.02);
+    } catch (e) {}
+  }
+  function scream() {
+    if (!ac) return;
+    try {
+      var n = ac.sampleRate * 0.7, b = ac.createBuffer(1, n, ac.sampleRate), d = b.getChannelData(0);
+      for (var i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n);
+      var src = ac.createBufferSource(), g = ac.createGain();
+      src.buffer = b; g.gain.value = 0.6; src.connect(g); g.connect(ac.destination); src.start();
+      tone(90, 'sawtooth', 0.5, 0.7, 40);
+    } catch (e) {}
+  }
+  var A = null;
+  function startAudio() {
+    stopAudio(); if (!ac) return;
+    try {
+      var n = ac.sampleRate * 2, b = ac.createBuffer(1, n, ac.sampleRate), d = b.getChannelData(0);
+      for (var i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+      var d1 = ac.createOscillator(), d2 = ac.createOscillator(), lp = ac.createBiquadFilter(), dg = ac.createGain(), ns = ac.createBufferSource(), bp = ac.createBiquadFilter(), ng = ac.createGain();
+      d1.type = 'sawtooth'; d2.type = 'sawtooth'; d1.frequency.value = 55; d2.frequency.value = 58.3; lp.type = 'lowpass'; lp.frequency.value = 200; dg.gain.value = 0;
+      d1.connect(lp); d2.connect(lp); lp.connect(dg); dg.connect(ac.destination);
+      ns.buffer = b; ns.loop = true; bp.type = 'bandpass'; bp.frequency.value = 1500; bp.Q.value = 4; ng.gain.value = 0;
+      ns.connect(bp); bp.connect(ng); ng.connect(ac.destination);
+      d1.start(); d2.start(); ns.start();
+      A = { d1: d1, d2: d2, lp: lp, dg: dg, ns: ns, bp: bp, ng: ng };
+    } catch (e) { A = null; }
+  }
+  function audioTick() {
+    if (!A) return;
+    var n = ac.currentTime, k = Math.min(1, 0.1 + 0.5 * (t / GOAL) + 0.6 * o);
+    A.dg.gain.setTargetAtTime(0.03 + 0.25 * k * k, n, 0.1);
+    A.d1.frequency.setTargetAtTime(55 + 70 * k, n, 0.2); A.d2.frequency.setTargetAtTime(58.3 + 85 * k, n, 0.2);
+    A.lp.frequency.setTargetAtTime(200 + 1400 * k, n, 0.2);
+    A.ng.gain.setTargetAtTime(0.1 * Math.pow(Math.max(0, k - 0.35), 1.5), n, 0.1); A.bp.frequency.setTargetAtTime(1500 + 3500 * k, n, 0.2);
+  }
+  function audioScare() {
+    if (!A) return; var n = ac.currentTime;
+    A.dg.gain.setTargetAtTime(0.6, n, 0.03); A.ng.gain.setTargetAtTime(0.4, n, 0.03); A.d1.frequency.setTargetAtTime(170, n, 0.1); A.d2.frequency.setTargetAtTime(181, n, 0.1);
+  }
+  function stopAudio() {
+    if (!A) return;
+    try { A.dg.gain.setTargetAtTime(0, ac.currentTime, 0.05); A.ng.gain.setTargetAtTime(0, ac.currentTime, 0.05); var a = A; setTimeout(function () { try { a.d1.stop(); a.d2.stop(); a.ns.stop(); } catch (e) {} }, 400); } catch (e) {}
+    A = null;
+  }
+  function start() { startAudio(); mode = 'play'; s = 0.45; o = 0; t = 0; jolt = 3; noteT = 0; beat = 0; creak1 = false; creak2 = false; shake = 0; ui.className = 'gone'; }
+  function lose(reason) { mode = 'scare'; why = reason; scareT = SCARE; shake = 1; audioScare(); scream(); }
+  function over() {
+    mode = 'over'; stopAudio(); ui.className = ''; tEl.textContent = why === 'snap' ? 'The spring snapped' : 'It got out';
+    mEl.textContent = 'Night ' + night + '. You lasted ' + Math.floor(t) + ' of ' + GOAL + ' seconds.';
+    m2.textContent = bestNight ? 'Best: survived ' + bestNight + (bestNight === 1 ? ' night.' : ' nights.') : 'You have not survived a night yet.';
+    m3.textContent = 'Touch to try again.';
+  }
+  function win() {
+    mode = 'win'; stopAudio(); bestNight = Math.max(bestNight, night);
+    try { localStorage.setItem('windme-night', String(bestNight)); } catch (e) {}
+    ui.className = ''; tEl.textContent = 'The song ended'; mEl.textContent = 'It stayed shut. You survived night ' + night + '.';
+    m2.textContent = 'The next night is faster.'; m3.textContent = 'Touch for night ' + (night + 1) + '.';
+  }
+  cv.addEventListener('pointerdown', function () {
+    sound();
+    if (mode === 'win') { night += 1; start(); holding = true; }
+    else if (mode === 'title' || mode === 'over') { start(); holding = true; }
+    else if (mode === 'play') holding = true;
+  });
+  function release() { holding = false; }
+  cv.addEventListener('pointerup', release); cv.addEventListener('pointercancel', release);
+
+  function update(dt) {
+    if (mode === 'scare') { scareT -= dt; shake = 0.4 + 0.6 * Math.random(); if (scareT <= 0) over(); return; }
+    if (mode !== 'play') return;
+    t += dt;
+    var sp = 1 + 0.25 * (night - 1), r = Math.min(1, t / 20), decay = (0.3 + 0.2 * r) * sp;
+    if (holding) { s += 0.7 * dt; crank += 9 * dt; } else { s = Math.max(0, s - decay * dt); crank += s * 3 * dt; }
+    jolt -= dt; if (jolt <= 0) { s = Math.max(0, s - 0.3); jolt = 3 + Math.random() * 2.5; shake = 0.5; tone(120, 'square', 0.25, 0.12, 60); }
+    if (shake > 0.02 && mode === 'play') shake *= 0.9;
+    if (s >= 1) { lose('snap'); return; }
+    if (s < 0.3) o += ((0.3 - s) * 2.2 * sp + 0.04) * dt; else o = Math.max(0, o - 0.12 * dt);
+    if (o >= 1) { lose('open'); return; }
+    if (o > 0.35 && !creak1) { creak1 = true; tone(140, 'sawtooth', 0.12, 0.7, 70); }
+    if (o > 0.7 && !creak2) { creak2 = true; tone(110, 'sawtooth', 0.16, 0.9, 50); }
+    if (o < 0.3) { creak1 = false; creak2 = false; }
+    noteT -= dt;
+    if (noteT <= 0 && s > 0.04) { var nf = NOTES[ni % NOTES.length] * (0.72 + 0.28 * Math.min(1, s / 0.5)) * (1 + (ni % 3 === 2 ? 0.03 * o : 0)); tone(nf, 'triangle', 0.12, 0.8); if (o > 0.25) tone(nf * 1.4142, 'sine', 0.05 + 0.1 * o, 0.8); ni++; noteT = 0.62 - 0.4 * Math.min(1, s); }
+    audioTick();
+    beat += dt; if (o > 0.25 && beat >= 1.2 - 0.9 * o) { beat = 0; tone(70, 'sine', 0.4, 0.18, 35); }
+    flick = Math.random() < 0.03 + 0.1 * o ? 0.12 : Math.max(0, flick - dt);
+    if (t >= GOAL) win();
+  }
+
+  var PALE = '#d9d3c2';
+  function drawBox(now) {
+    var bw = Math.min(W * 0.62, 300), bh = bw * 0.55, cx = W / 2, cy = H * 0.5, lh = bh * 0.22, hx = cx - bw / 2;
+    var hr = bw * 0.2, hyy = cy + bh * 0.15 - o * bw * 1.15;
+    ctx.strokeStyle = '#b9b19c'; ctx.lineWidth = Math.max(2, bw * 0.02); ctx.beginPath(); ctx.moveTo(cx, cy + bh * 0.2);
+    for (var i = 1; i <= 8; i++) ctx.lineTo(cx + (i % 2 ? 1 : -1) * bw * 0.04, cy + bh * 0.2 + (hyy + hr - cy - bh * 0.2) * i / 8); ctx.stroke();
+    var wob = Math.sin(now / 200) * o * 4;
+    ctx.fillStyle = '#7a1c1c'; ctx.beginPath(); ctx.moveTo(cx - hr * 0.9 + wob, hyy - hr * 0.6); ctx.lineTo(cx + wob, hyy - hr * 2.2); ctx.lineTo(cx + hr * 0.9 + wob, hyy - hr * 0.6); ctx.fill();
+    ctx.fillStyle = PALE; ctx.beginPath(); ctx.arc(cx + wob, hyy, hr, 0, 7); ctx.fill();
+    var glow = o > 0.6; if (glow) { ctx.shadowColor = '#ff2a1a'; ctx.shadowBlur = hr * 0.8; }
+    ctx.fillStyle = '#050505'; ctx.beginPath(); ctx.ellipse(cx - hr * 0.38 + wob, hyy - hr * 0.1, hr * 0.22, hr * 0.28, 0, 0, 7); ctx.ellipse(cx + hr * 0.38 + wob, hyy - hr * 0.1, hr * 0.22, hr * 0.28, 0, 0, 7); ctx.fill();
+    ctx.shadowBlur = 0; ctx.fillStyle = glow ? '#ff4a3d' : '#eee'; ctx.beginPath(); ctx.arc(cx - hr * 0.38 + wob, hyy - hr * 0.1, hr * 0.05, 0, 7); ctx.arc(cx + hr * 0.38 + wob, hyy - hr * 0.1, hr * 0.05, 0, 7); ctx.fill();
+    ctx.strokeStyle = '#300'; ctx.lineWidth = Math.max(1.5, hr * 0.06); ctx.beginPath(); ctx.arc(cx + wob, hyy + hr * 0.15, hr * 0.55, 0.15, Math.PI - 0.15); ctx.stroke();
+    ctx.fillStyle = '#3a2417'; ctx.fillRect(cx - bw / 2, cy, bw, bh);
+    ctx.fillStyle = '#4a2e1c'; ctx.fillRect(cx - bw / 2, cy, bw, bh * 0.08);
+    ctx.strokeStyle = '#1c110a'; ctx.lineWidth = 2; ctx.strokeRect(cx - bw / 2 + 8, cy + bh * 0.2, bw - 16, bh * 0.7);
+    ctx.save(); ctx.translate(hx, cy); ctx.rotate(-o * 2.0); ctx.fillStyle = '#4a2e1c'; ctx.fillRect(0, -lh, bw, lh); ctx.fillStyle = '#2a190f'; ctx.fillRect(0, -lh * 0.25, bw, lh * 0.25); ctx.restore();
+    var kx = cx + bw / 2 + bw * 0.14, ky = cy + bh * 0.55, al = bw * 0.14;
+    ctx.strokeStyle = '#8a7a5a'; ctx.lineWidth = 6; ctx.beginPath(); ctx.moveTo(kx, ky); ctx.lineTo(kx + Math.cos(crank) * al, ky + Math.sin(crank) * al); ctx.stroke();
+    ctx.fillStyle = '#b8a47a'; ctx.beginPath(); ctx.arc(kx + Math.cos(crank) * al, ky + Math.sin(crank) * al, 9, 0, 7); ctx.fill();
+    var gy = cy + bh + 44, gw = bw, gx = cx - gw / 2;
+    ctx.fillStyle = '#6a1414'; ctx.fillRect(gx, gy, gw, 14);
+    ctx.fillStyle = '#2f6b3a'; ctx.fillRect(gx + gw * 0.3, gy, gw * 0.45, 14);
+    ctx.fillStyle = '#eadfc8'; ctx.beginPath(); ctx.moveTo(gx + gw * Math.min(1, s), gy - 4); ctx.lineTo(gx + gw * Math.min(1, s) - 7, gy - 14); ctx.lineTo(gx + gw * Math.min(1, s) + 7, gy - 14); ctx.fill();
+    var msg = s < 0.3 ? 'WIND' : (s > 0.76 ? 'TOO TIGHT' : '');
+    if (msg) { ctx.fillStyle = msg === 'WIND' ? '#eadfc8' : '#ff4a3d'; ctx.font = 'bold 30px Georgia, serif'; ctx.textAlign = 'center'; ctx.fillText(msg, W / 2, gy + 52); }
+  }
+  function scareFace(p) {
+    var k = Math.min(1, p * 3.5), i;
+    ctx.fillStyle = (Math.floor(p * 40) % 2 && p < 0.6) ? '#5a0000' : '#000'; ctx.fillRect(-30, -30, W + 60, H + 60);
+    ctx.fillStyle = PALE; ctx.beginPath(); ctx.ellipse(W / 2, H * 0.5, W * (0.3 + 0.75 * k), H * (0.3 + 0.5 * k), 0, 0, 7); ctx.fill();
+    ctx.fillStyle = 'rgba(160,20,20,0.7)'; ctx.beginPath(); ctx.arc(W * (0.5 - 0.2 - 0.1 * k), H * 0.58, W * (0.05 + 0.08 * k), 0, 7); ctx.arc(W * (0.5 + 0.2 + 0.1 * k), H * 0.58, W * (0.05 + 0.08 * k), 0, 7); ctx.fill();
+    var ex = W * (0.12 + 0.1 * k), rx = W * (0.07 + 0.13 * k), ey = H * 0.44;
+    [W / 2 - ex, W / 2 + ex].forEach(function (cx) {
+      ctx.shadowColor = '#ff1a10'; ctx.shadowBlur = 40 * k; ctx.fillStyle = '#030303'; ctx.beginPath(); ctx.ellipse(cx, ey, rx, rx * 1.15, 0, 0, 7); ctx.fill(); ctx.shadowBlur = 0;
+      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(cx + (Math.random() - 0.5) * rx * 0.2, ey + (Math.random() - 0.5) * rx * 0.2, rx * 0.1, 0, 7); ctx.fill();
+    });
+    ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.lineWidth = 2; for (i = 0; i < 7; i++) { ctx.beginPath(); var a = i * 0.9; ctx.moveTo(W / 2 + Math.cos(a) * W * 0.2 * k, H * 0.3 + Math.sin(a) * 30); ctx.lineTo(W / 2 + Math.cos(a) * W * 0.5 * k, H * 0.3 + Math.sin(a) * 120 * k); ctx.stroke(); }
+    var my = H * 0.74, mw = W * (0.15 + 0.3 * k), mh = H * (0.04 + 0.12 * k);
+    ctx.fillStyle = '#1a0000'; ctx.beginPath(); ctx.ellipse(W / 2, my, mw, mh, 0, 0, 7); ctx.fill(); ctx.fillStyle = '#eee';
+    for (i = 0; i < 10; i++) { var tx = W / 2 - mw + (mw * 2 / 9) * i, tl = mh * (0.5 + 0.3 * ((i * 37) % 5) / 5);
+      ctx.beginPath(); ctx.moveTo(tx - mw * 0.09, my - mh * 0.75); ctx.lineTo(tx + mw * 0.09, my - mh * 0.75); ctx.lineTo(tx, my - mh * 0.75 + tl); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(tx - mw * 0.09, my + mh * 0.75); ctx.lineTo(tx + mw * 0.09, my + mh * 0.75); ctx.lineTo(tx, my + mh * 0.75 - tl); ctx.fill(); }
+  }
+  function scareFace2(p) {
+    var i, k = Math.min(1, p * 6), z = 0.55 + 0.5 * k + 0.05 * Math.sin(p * 60), cx = W / 2, cy = H * 0.5;
+    ctx.fillStyle = (Math.floor(p * 50) % 2 && p < 0.5) ? '#300' : '#000'; ctx.fillRect(-40, -40, W + 80, H + 80);
+    var fw = W * 0.93 * z, fh = H * 0.75 * z;
+    var fg = ctx.createRadialGradient(cx - fw * 0.15, cy - fh * 0.2, fw * 0.1, cx, cy, fw);
+    fg.addColorStop(0, '#e9e2d0'); fg.addColorStop(0.55, '#b9ad94'); fg.addColorStop(1, '#2a241c');
+    ctx.fillStyle = fg; ctx.beginPath(); ctx.ellipse(cx, cy, fw, fh, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = 'rgba(30,18,12,0.35)'; ctx.beginPath(); ctx.ellipse(cx - fw * 0.5, cy + fh * 0.2, fw * 0.25, fh * 0.3, 0.3, 0, 7); ctx.ellipse(cx + fw * 0.5, cy + fh * 0.2, fw * 0.25, fh * 0.3, -0.3, 0, 7); ctx.fill();
+    ctx.strokeStyle = 'rgba(25,15,10,0.8)'; ctx.lineWidth = Math.max(1, fw * 0.006);
+    for (i = 0; i < 9; i++) { var a = i * 0.7 + 0.3, x = cx + Math.cos(a) * fw * 0.15, y = cy - fh * 0.5 + Math.sin(a) * fh * 0.1; ctx.beginPath(); ctx.moveTo(x, y); for (var j = 1; j < 7; j++) { x += Math.cos(a + Math.sin(i * j) * 0.9) * fw * 0.09; y += Math.abs(Math.sin(a * j)) * fh * 0.08 + fh * 0.03; ctx.lineTo(x, y); } ctx.stroke(); }
+    var ex = fw * 0.42, ey = cy - fh * 0.12, er = fw * 0.24;
+    [cx - ex, cx + ex].forEach(function (x0, idx) {
+      ctx.fillStyle = '#0a0505'; ctx.beginPath(); ctx.ellipse(x0, ey, er * 1.25, er * 1.1, 0, 0, 7); ctx.fill();
+      var eg = ctx.createRadialGradient(x0 - er * 0.2, ey - er * 0.2, er * 0.1, x0, ey, er); eg.addColorStop(0, '#f4efe4'); eg.addColorStop(1, '#a89c86');
+      ctx.fillStyle = eg; ctx.beginPath(); ctx.ellipse(x0, ey, er * 0.9, er * 0.78, 0, 0, 7); ctx.fill();
+      ctx.strokeStyle = 'rgba(170,0,0,0.8)'; ctx.lineWidth = Math.max(1, er * 0.025);
+      for (var q = 0; q < 18; q++) { var aa = q * 0.35 + idx; ctx.beginPath(); ctx.moveTo(x0 + Math.cos(aa) * er * 0.9, ey + Math.sin(aa) * er * 0.78); ctx.lineTo(x0 + Math.cos(aa + 0.1) * er * 0.4, ey + Math.sin(aa + 0.1) * er * 0.35); ctx.stroke(); }
+      var px = x0 + (Math.random() - 0.5) * er * 0.08, py = ey + (Math.random() - 0.5) * er * 0.08 - er * 0.05;
+      ctx.fillStyle = '#050505'; ctx.beginPath(); ctx.arc(px, py, er * 0.16 * (1.3 - 0.4 * k), 0, 7); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.85)'; ctx.beginPath(); ctx.arc(px - er * 0.06, py - er * 0.06, er * 0.035, 0, 7); ctx.fill();
+    });
+    ctx.fillStyle = 'rgba(20,10,8,0.7)'; ctx.beginPath(); ctx.ellipse(cx, cy + fh * 0.22, fw * 0.05, fh * 0.06, 0, 0, 7); ctx.fill();
+    var my = cy + fh * 0.58, mw = fw * (0.35 + 0.3 * k), mh = fh * (0.04 + 0.2 * k);
+    ctx.fillStyle = '#120000'; ctx.beginPath(); ctx.ellipse(cx, my, mw, mh, 0, 0, 7); ctx.fill();
+    for (i = 0; i < 14; i++) { var tx = cx - mw * 0.9 + (mw * 1.8 / 13) * i, th = mh * (0.5 + 0.45 * ((i * 53) % 7) / 7), tw = mw * 0.09; ctx.fillStyle = '#d8cfae'; ctx.fillRect(tx - tw / 2, my - mh * 0.8, tw, th); ctx.fillRect(tx - tw / 2 + 2, my + mh * 0.8 - th * 0.85, tw, th * 0.85); }
+    for (i = 0; i < 80; i++) { ctx.fillStyle = 'rgba(255,255,255,' + (Math.random() * 0.12) + ')'; ctx.fillRect(Math.random() * W, Math.random() * H, 2, 2); }
+    var vg = ctx.createRadialGradient(cx, cy, Math.min(W, H) * 0.2, cx, cy, Math.max(W, H) * 0.75); vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,0.85)'); ctx.fillStyle = vg; ctx.fillRect(-40, -40, W + 80, H + 80);
+    if (Math.random() < 0.5 && p < 0.7) { var sy = Math.random() * H, sh = 10 + Math.random() * 40; ctx.drawImage(cv, 0, sy * dpr, W * dpr, sh * dpr, (Math.random() - 0.5) * 40, sy, W, sh); }
+  }
+  function draw(now) {
+    ctx.save();
+    if (shake > 0.02) ctx.translate((Math.random() - 0.5) * 30 * shake, (Math.random() - 0.5) * 30 * shake);
+    ctx.fillStyle = '#000'; ctx.fillRect(-40, -40, W + 80, H + 80);
+    if (mode === 'scare') scareFace2(1 - scareT / SCARE);
+    else if (mode === 'win') { var wg = ctx.createLinearGradient(0, 0, 0, H); wg.addColorStop(0, '#14100c'); wg.addColorStop(1, '#8a5a30'); ctx.fillStyle = wg; ctx.fillRect(0, 0, W, H); }
+    else {
+      var g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#1a1410'); g.addColorStop(1, '#0b0806'); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+      if (mode === 'play' || mode === 'over') drawBox(now);
+      if (flick > 0) { ctx.fillStyle = 'rgba(0,0,0,0.75)'; ctx.fillRect(0, 0, W, H); }
+    }
+    ctx.restore();
+    if (mode === 'play') {
+      var rg = ctx.createRadialGradient(W / 2, H * 0.5, H * 0.1, W / 2, H * 0.5, H * 0.7);
+      rg.addColorStop(0, 'rgba(0,0,0,0)'); rg.addColorStop(1, 'rgba(0,0,0,' + (0.7 + 0.25 * o) + ')'); ctx.fillStyle = rg; ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = '#eadfc8'; ctx.font = '20px Georgia, serif'; ctx.textAlign = 'center'; ctx.fillText('Night ' + night + '   ' + Math.floor(t) + ' / ' + GOAL, W / 2, 40);
+    }
+  }
+  function frame(ts) { var dt = Math.min(0.05, (ts - last) / 1000 || 0); last = ts; update(dt); draw(ts); requestAnimationFrame(frame); }
+  if (window.ResizeObserver) new ResizeObserver(resize).observe(wrap);
+  window.addEventListener('resize', resize); resize(); requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
